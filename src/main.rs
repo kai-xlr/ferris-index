@@ -1,6 +1,8 @@
 use clap::Parser;
+use serde_derive::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "A simple file indexer built in Rust")]
@@ -10,37 +12,57 @@ struct Args {
     output: Option<PathBuf>,
 }
 
-fn visit_dirs(path: &Path) -> std::io::Result<()> {
-    // Check if it's a directory and not a symlink to avoid infinite loops
-    if path.is_dir() && !path.is_symlink() {
-        // Handle potential permission errors by matching on the result
-        let entries = match fs::read_dir(path) {
-            Ok(entries) => entries,
-            Err(e) => {
-                eprintln!("Skipping {:?}: {}", path, e);
-                return Ok(()); // Skip this dir but keep the rest of the scan going
-            }
-        };
+#[derive(Debug, Serialize)]
+struct FileInfo {
+    path: PathBuf,
+    size: u64,
+    modified: SystemTime,
+}
 
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                visit_dirs(&path)?;
-            } else {
-                println!("{}", path.display());
-            }
+fn visit_dirs(path: &Path) -> std::io::Result<Vec<FileInfo>> {
+    let mut files = Vec::new();
+
+    if !path.is_dir() || path.is_symlink() {
+        return Ok(files);
+    }
+
+    let entries = match fs::read_dir(path) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Skipping {:?}: {}", path, e);
+            return Ok(files);
+        }
+    };
+
+    for entry in entries {
+        let entry = entry?;
+        let file_path = entry.path();
+
+        if file_path.is_dir() {
+            files.extend(visit_dirs(&file_path)?);
+        } else {
+            let metadata = entry.metadata()?;
+            files.push(FileInfo {
+                path: file_path,
+                size: metadata.len(),
+                modified: metadata.modified()?,
+            });
         }
     }
-    Ok(())
+
+    Ok(files)
 }
 
 fn main() {
     let args = Args::parse();
 
-    // Call our function and handle the final result
-    if let Err(e) = visit_dirs(&args.path) {
-        eprintln!("Critical error during scan: {}", e);
-        std::process::exit(1);
+    match visit_dirs(&args.path) {
+        Ok(files) => {
+            println!("Found {} files", files.len());
+        }
+        Err(e) => {
+            eprintln!("Critical error during scan: {}", e);
+            std::process::exit(1);
+        }
     }
 }
